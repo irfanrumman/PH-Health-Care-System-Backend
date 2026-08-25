@@ -9,16 +9,25 @@ import config from "../../config";
 import { prisma } from "../../lib/prisma";
 import { jwtUtils } from "../../utils/jwt";
 import type {
+	IForgotPasswordPayload,
 	IGoogleLoginPayload,
 	ILoginUserPayload,
 	IRegisterPatientPayload,
 	IRequestUser,
+	IResetPasswordPayload,
+	IVerifyEmailPayload,
 } from "./auth.interface";
 import { googleClient } from "../../lib/googleAuth";
 import type { TokenPayload } from "google-auth-library";
+import crypto from "crypto";
+import { redisClient } from "../../lib/redis";
+import path from "path";
+import ejs from "ejs";
+import { transporter } from "../../lib/nodemailer";
 
 const registerPatient = async (payload: IRegisterPatientPayload) => {
-	const { name, password } = payload;
+	const { name, password, patient : patientData } = payload;
+	
 	const email = payload.email.trim().toLowerCase();
 
 	const isUserExists = await prisma.user.findUnique({
@@ -31,21 +40,143 @@ const registerPatient = async (payload: IRegisterPatientPayload) => {
 
 	const hashedPassword = await bcrypt.hash(password, 8);
 
+	const expirationSeconds = 5 * 60
+
+	const otpKey = `patient-registration-otp:${email}`
+	const otpValue = crypto.randomInt(100000, 1000000).toString();
+
+	await redisClient.set(otpKey, otpValue, {
+		expiration: {
+			type: "EX",
+			value: expirationSeconds
+		}
+	})
+
+	const patientRegistrationKey = `patient-registration-data:${email}`
+	const redisUserDataPayload = {
+		name,
+		email,
+		password: hashedPassword,
+		patient: patientData
+	}
+
+	await redisClient.set(
+		patientRegistrationKey, 
+		JSON.stringify(redisUserDataPayload), 
+		{
+			expiration: {
+				type: "EX",
+				value: expirationSeconds
+			}
+		}
+	)
+
+
+	const tempatePath = path.join(process.cwd(), "src/app/templates/registration-user-otp.ejs")
+
+	const templateData = {
+		name,
+		email,
+		otp : otpValue,
+		expirationMinutes: expirationSeconds / 60
+
+	}
+
+	const html = await ejs.renderFile(tempatePath, templateData)
+
+	await transporter.sendMail({
+		from: config.email_sender,
+		to: email,
+		subject: "Email Verification",
+		// text : `Your OTP is ${otp}`
+		// html: `<h1>Your OTP is ${otp}</h1>`
+		html
+	})
+	
+};
+
+const verifyPatientEmail = async (payload : IVerifyEmailPayload) => {
+
+	const otp = payload.otp;
+	const email = payload.email.trim().toLowerCase();
+
+	const isUserExist = await prisma.user.findUnique({
+		where: { email },
+	});
+
+	if (isUserExist?.status === "BLOCKED") {
+		throw new Error("User is Blocked")
+	}
+
+	if (isUserExist?.emailVerified) {
+		throw new Error("Email ALready Verified")
+	}
+
+	if (isUserExist?.isDeleted || isUserExist?.status === "DELETED") {
+		throw new Error("User is Deleted")
+	}
+
+	const otpKey = `patient-registration-otp:${email}`
+
+	const redisOtp = await redisClient.get(otpKey)
+
+	if (!redisOtp) {
+		throw new Error("Invalid OTP")
+	}
+
+	if (redisOtp !== otp) {
+		throw new Error("OTP Does Not Match")
+	}
+
+	await redisClient.del(otpKey)
+
+	const patientRegistrationKey = `patient-registration-data:${email}`
+
+	const redisPatientData = await redisClient.get(patientRegistrationKey)
+
+	if(!redisPatientData){
+		throw new Error ("Patient Doesnt Exist");
+	}
+
+	const patientPayload : IRegisterPatientPayload = JSON.parse(redisPatientData)
+
 	const createdUser = await prisma.user.create({
 		data: {
-			name,
-			email,
-			password: hashedPassword,
+			name : patientPayload.name,
+			email : patientPayload.email,
+			password: patientPayload.password,
 			role: Role.PATIENT,
 			status: UserStatus.ACTIVE,
-			emailVerified: false,
+			emailVerified: true,
 			patient: {
-				create: { name, email },
+				create: {
+					name: patientPayload.name,
+					email: patientPayload.email, 
+					contactNumber: patientPayload?.patient?.contactNumber || "" },
 			},
 		},
 		omit: { password: true },
 		include: { patient: true },
 	});
+
+	await redisClient.del(patientRegistrationKey)
+
+	const tempatePath = path.join(process.cwd(), "src/app/templates/patient-welcome-email.ejs")
+
+	const templateData = {
+		name : createdUser.name,
+	}
+
+	const html = await ejs.renderFile(tempatePath, templateData)
+
+	await transporter.sendMail({
+		from: config.email_sender,
+		to: email,
+		subject: "Welcome To PH Healthcare System",
+		// text : `Your OTP is ${otp}`
+		// html: `<h1>Your OTP is ${otp}</h1>`
+		html
+	})
 
 	const { patient, ...user } = createdUser;
 	const jwtPayload = {
@@ -73,7 +204,8 @@ const registerPatient = async (payload: IRegisterPatientPayload) => {
 		accessToken,
 		refreshToken,
 	};
-};
+
+}
 
 const loginUser = async (payload: ILoginUserPayload) => {
 	const { password } = payload;
@@ -96,7 +228,9 @@ const loginUser = async (payload: ILoginUserPayload) => {
 	}
 
 	if (user.password === null && user.googleId !== null) {
-		throw new Error("User registered with Google. Please login with Google.");
+		throw new Error(
+			"User Already Has Account Registered With Google. Try To Login With Google.",
+		);
 	}
 
 	const isPasswordMatched = await bcrypt.compare(
@@ -201,6 +335,8 @@ const refreshToken = async (token: string) => {
 		refreshToken,
 	};
 };
+
+
 
 const googleLogin = async (payload: IGoogleLoginPayload) => {
 	//   const result = await googleClient.verifyIdToken({
@@ -337,10 +473,152 @@ const googleLogin = async (payload: IGoogleLoginPayload) => {
 	};
 };
 
+
+const forgotPassword = async (payload : IForgotPasswordPayload) => {
+	const {email} = payload;
+
+	const isUserExist = await prisma.user.findUnique({
+		where : {
+			email
+		}
+	});
+
+	if(!isUserExist){
+		throw new Error("User Does Not Exist!")
+	};
+
+	if(isUserExist.status === "BLOCKED"){
+		throw new Error("User is Blocked")
+	}
+
+	if(!isUserExist.emailVerified){
+		throw new Error("User Not Verified")
+	}
+
+	if(isUserExist.isDeleted || isUserExist.status === "DELETED"){
+		throw new Error("User is Deleted")
+	}
+
+	if(isUserExist.googleId && isUserExist.authProvider === "GOOGLE"){
+		throw new Error("User Has Account With Google")
+	}
+
+	const otp = crypto.randomInt(100000, 1000000).toString();
+
+	const key = `forgor-password-otp:${isUserExist.email}`
+
+	const expirationSeconds = 5 * 60
+
+	await redisClient.set(key, otp, {
+		expiration : {
+			type : "EX",
+			value : expirationSeconds
+		}
+	})
+
+	const tempatePath = path.join(process.cwd(), "src/app/templates/forgot-password.ejs")
+
+	const templateData = {
+		name: isUserExist.name,
+		otp,
+		expirationMinutes: expirationSeconds / 60
+
+	}
+
+	const html = await ejs.renderFile(tempatePath, templateData)
+
+	await transporter.sendMail({
+		from : config.email_sender,
+		to : isUserExist.email,
+		subject : "Forgot Password",
+		// text : `Your OTP is ${otp}`
+		// html: `<h1>Your OTP is ${otp}</h1>`
+		html
+	})
+}
+
+const resetPassword = async (payload : IResetPasswordPayload) => {
+	const { email, otp, newPassword } = payload;
+
+
+	const isUserExist = await prisma.user.findUnique({
+		where: {
+			email
+		}
+	});
+
+	if (!isUserExist) {
+		throw new Error("User Does Not Exist!")
+	};
+
+	if (isUserExist.status === "BLOCKED") {
+		throw new Error("User is Blocked")
+	}
+
+	if (!isUserExist.emailVerified) {
+		throw new Error("User Not Verified")
+	}
+
+	if (isUserExist.isDeleted || isUserExist.status === "DELETED") {
+		throw new Error("User is Deleted")
+	}
+
+	if (isUserExist.googleId && isUserExist.authProvider === "GOOGLE") {
+		throw new Error("User Has Account With Google")
+	}
+
+	const key = `forgor-password-otp:${isUserExist.email}`
+
+	const redisOtp = await redisClient.get(key)
+
+	if(!redisOtp){
+		throw new Error("Invalid OTP")
+	}
+
+	if(redisOtp !== otp){
+		throw new Error("OTP Does Not Match")
+	}
+
+	const hashedNewPassword = await bcrypt.hash(newPassword, Number(config.bcrypt_salt_rounds));
+
+	await prisma.user.update({
+		where : {
+			email : isUserExist.email
+		},
+		data : {
+			password : hashedNewPassword
+		}
+	});
+
+	await redisClient.del([key]);
+
+	const tempatePath = path.join(process.cwd(), "src/app/templates/reset-password-success.ejs")
+
+	const templateData = {
+		name: isUserExist.name
+	}
+
+	const html = await ejs.renderFile(tempatePath, templateData )
+
+
+	await transporter.sendMail({
+		from: config.email_sender,
+		to: isUserExist.email,
+		subject: "Password Changed",
+		// text : `Your OTP is ${otp}`
+		// html: `<h1>Your Password Is Changed</h1>`
+		html
+	})
+}
+
+
 export const AuthService = {
 	registerPatient,
+	verifyPatientEmail,
 	loginUser,
 	getMe,
 	refreshToken,
 	googleLogin,
+	forgotPassword,
+	resetPassword,
 };
