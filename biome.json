@@ -42,7 +42,10 @@
 			"**",
 			"!src/genrated",
 			"!src/app/templates"
-		]
+		],
+		"supiscious": {
+			"noExplicitAny": "info"
+		}
 	},
 	"javascript": {
 		"formatter": {
