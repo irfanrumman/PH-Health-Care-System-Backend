@@ -1,14 +1,14 @@
 import { Router } from "express";
 import { Role } from "../../../generated/prisma/enums";
 import { auth } from "../../middleware/checkAuth";
-import { AuthController } from "./auth.controller";
 import { validateRequest } from "../../middleware/valideRequest";
+import { AuthController } from "./auth.controller";
 import { UserValidation } from "./auth.validaiton";
 
 const router = Router();
 
-
-router.post("/register",
+router.post(
+	"/register",
 	// (req : Request, res : Response, next : NextFunction) => {
 
 	// 	try {
@@ -28,33 +28,40 @@ router.post("/register",
 
 	// 		next()
 	// 	} catch (error) {
-			
+
 	// 		next(error)
 	// 	}
 	// },
 
 	validateRequest(UserValidation.PatientRegistrationZodSchema),
-	 AuthController.registerPatient);
-
-	 router.post("/verify-email",
+	AuthController.registerPatient,
+);
+router.post(
+	"/verify-email",
 	validateRequest(UserValidation.PatientEmailVerifyZodSchema),
-	 AuthController.verifyPatientEmail);
-router.post("/login",
+	AuthController.verifyPatientEmail,
+);
+router.post(
+	"/login",
 	validateRequest(UserValidation.LoginZodSchema),
-	 AuthController.loginUser);
-
+	AuthController.loginUser,
+);
 router.get(
 	"/me",
 	auth(Role.ADMIN, Role.DOCTOR, Role.PATIENT, Role.SUPER_ADMIN),
+	// validateRequest
 	AuthController.getMe,
 );
 router.post("/refresh-token", AuthController.refreshToken);
 router.post("/google", AuthController.googleLogin);
-router.post("/forgot-password",
+router.post(
+	"/forgot-password",
 	validateRequest(UserValidation.ForgotPasswordZodSchema),
-	 AuthController.forgotPassword);
-router.post("/reset-password",
+	AuthController.forgotPassword,
+);
+router.post(
+	"/reset-password",
 	validateRequest(UserValidation.ResetPasswordZodSchema),
-	 AuthController.resetPassword);
-
+	AuthController.resetPassword,
+);
 export const AuthRoutes = router;

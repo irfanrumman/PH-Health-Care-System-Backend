@@ -2,16 +2,23 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import express, {
 	type Application,
+	type NextFunction,
 	type Request,
 	type Response,
 } from "express";
 import httpStatus from "http-status";
 import config from "./app/config";
+import { getBkashIdToken } from "./app/lib/bkash";
 import { globalErrorHandler } from "./app/middleware/globalErrorHandler";
 import { notFound } from "./app/middleware/notFound";
-import { AuthRoutes } from "./app/module/auth/auth.route";
-import { UserRoutes } from "./app/module/user/user.route";
+import { AnalyticsRoutes } from "./app/module/analytics/analytics.route";
 import { AppointementRoutes } from "./app/module/appointment/appointment.route";
+import { AuthRoutes } from "./app/module/auth/auth.route";
+import { DoctorRoutes } from "./app/module/doctor/doctor.route";
+import { PaymentRoutes } from "./app/module/payment/payment.route";
+import { PrescriptionRoutes } from "./app/module/prescription/prescription.route";
+import { ScheduleRoutes } from "./app/module/schedule/schedule.route";
+import { UserRoutes } from "./app/module/user/user.route";
 
 const app: Application = express();
 
@@ -32,39 +39,30 @@ app.use(cookieParser());
 app.use("/api/v1/auth", AuthRoutes);
 app.use("/api/v1/user", UserRoutes);
 app.use("/api/v1/appointment", AppointementRoutes);
+app.use("/api/v1/doctor", DoctorRoutes);
+app.use("/api/v1/schedule", ScheduleRoutes);
+app.use("/api/v1/payment", PaymentRoutes);
+app.use("/api/v1/prescription", PrescriptionRoutes);
+app.use("/api/v1/analytics", AnalyticsRoutes);
 
-// app.get("/test", async (req: Request, res: Response, next : NextFunction) => {
+app.get("/test", async (req: Request, res: Response, next: NextFunction) => {
+	try {
+		const grantIdTokenResult = await getBkashIdToken();
 
-// 	try {
+		console.log(grantIdTokenResult);
 
-		// 100000 > 999999 > 1000000
-			// const otp = crypto.randomInt(100000, 1000000) // 1, 2, 3, 4, 5, 6,7,8 ,9, 10 => X-11
-		
-			// await redisClient.set("forgot-password-otp:patient1@gmail.com", "123456", {
-			// 	expiration : {
-			// 		type : "EX",
-			// 		value : 60
-			// 	}
-			// })
-
-		
-
-
-// 		res.status(httpStatus.OK).json({
-// 			success: true,
-// 			message: "Welcome to PH Healthcare System Backend",
-// 			data : otp
-// 		});
-// 	} catch (error) {
-// 		console.log(error);
-// 		next(error)
-// 	}
-// })
-
+		res.status(httpStatus.OK).json({
+			success: true,
+			message: "Welcome to PH Healthcare System Backend",
+			data: null,
+		});
+	} catch (error) {
+		console.log(error);
+		next(error);
+	}
+});
 
 // Basic route
-
-
 app.get("/", async (req: Request, res: Response) => {
 	res.status(httpStatus.OK).json({
 		success: true,
